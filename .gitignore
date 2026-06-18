@@ -216,3 +216,10 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Node.js
+node_modules/
+package-lock.json
+
+# Gallery cache (thumbnails, previews, SQLite DB)
+.gallery_cache/
