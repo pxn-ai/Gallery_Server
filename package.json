@@ -1,20 +1,24 @@
 {
   "name": "gallery-server",
-  "version": "1.0.0",
-  "description": "Self-hosted photo & video gallery server for Raspberry Pi",
+  "version": "2.0.0",
+  "description": "Self-hosted photo & video gallery with AI face recognition for Raspberry Pi",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
     "dev": "node --watch server.js",
-    "scan": "node -e \"const {scanMedia} = require('./src/scanner'); scanMedia().then(() => process.exit(0))\""
+    "scan": "node -e \"const {scanMedia} = require('./src/scanner'); scanMedia().then(() => process.exit(0))\"",
+    "download-models": "node scripts/download-models.js"
   },
-  "keywords": ["gallery", "photos", "videos", "self-hosted"],
+  "keywords": ["gallery", "photos", "videos", "self-hosted", "face-recognition"],
   "license": "MIT",
   "dependencies": {
     "better-sqlite3": "^11.8.1",
+    "canvas": "^3.1.0",
+    "exif-reader": "^2.0.1",
     "express": "^4.21.2",
     "fluent-ffmpeg": "^2.1.3",
     "mime-types": "^2.1.35",
+    "onnxruntime-node": "^1.21.0",
     "sharp": "^0.33.5"
   }
 }
