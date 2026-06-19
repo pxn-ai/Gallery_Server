@@ -26,6 +26,9 @@ db.exec(`
     duration REAL,
     date_taken TEXT,
     date_modified TEXT,
+    latitude REAL,
+    longitude REAL,
+    location_name TEXT,
     thumb_path TEXT,
     preview_path TEXT,
     scanned_at TEXT DEFAULT (datetime('now'))
@@ -35,6 +38,7 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_media_date ON media(date_taken DESC);
   CREATE INDEX IF NOT EXISTS idx_media_modified ON media(date_modified DESC);
   CREATE INDEX IF NOT EXISTS idx_media_path ON media(file_path);
+  CREATE INDEX IF NOT EXISTS idx_media_location ON media(latitude, longitude);
 
   -- Face detections (one row per face found in a photo)
   CREATE TABLE IF NOT EXISTS faces (
@@ -72,15 +76,28 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_ai_scan ON ai_scan_status(media_id);
 `);
 
+// Add GPS columns if upgrading from v1 schema
+try {
+  db.exec(`ALTER TABLE media ADD COLUMN latitude REAL`);
+} catch (_) { /* column already exists */ }
+try {
+  db.exec(`ALTER TABLE media ADD COLUMN longitude REAL`);
+} catch (_) { /* column already exists */ }
+try {
+  db.exec(`ALTER TABLE media ADD COLUMN location_name TEXT`);
+} catch (_) { /* column already exists */ }
+
 // Prepared statements
 const stmts = {
   // Media CRUD
   upsert: db.prepare(`
-    INSERT INTO media (file_path, file_name, media_type, file_size, width, height, duration, date_taken, date_modified)
-    VALUES (@file_path, @file_name, @media_type, @file_size, @width, @height, @duration, @date_taken, @date_modified)
+    INSERT INTO media (file_path, file_name, media_type, file_size, width, height, duration, date_taken, date_modified, latitude, longitude)
+    VALUES (@file_path, @file_name, @media_type, @file_size, @width, @height, @duration, @date_taken, @date_modified, @latitude, @longitude)
     ON CONFLICT(file_path) DO UPDATE SET
       file_size = @file_size, width = @width, height = @height, duration = @duration,
-      date_taken = @date_taken, date_modified = @date_modified, scanned_at = datetime('now')
+      date_taken = @date_taken, date_modified = @date_modified,
+      latitude = @latitude, longitude = @longitude,
+      scanned_at = datetime('now')
   `),
   updateThumb: db.prepare(`UPDATE media SET thumb_path = @thumb_path WHERE id = @id`),
   updatePreview: db.prepare(`UPDATE media SET preview_path = @preview_path WHERE id = @id`),
@@ -116,13 +133,14 @@ const stmts = {
   getFacesByPerson: db.prepare(`SELECT * FROM faces WHERE person_id = ?`),
   updateFacePerson: db.prepare(`UPDATE faces SET person_id = @person_id WHERE id = @id`),
   getAllFacesWithEmbeddings: db.prepare(`SELECT id, embedding, person_id FROM faces WHERE embedding IS NOT NULL`),
+  deleteFacesByMedia: db.prepare(`DELETE FROM faces WHERE media_id = ?`),
 
   // People CRUD
   insertPerson: db.prepare(`
     INSERT INTO people (name, representative_face_id, face_count) VALUES (@name, @representative_face_id, @face_count)
   `),
   getAllPeople: db.prepare(`
-    SELECT p.*, f.media_id as rep_media_id
+    SELECT p.*, f.media_id as rep_media_id, f.bbox_x, f.bbox_y, f.bbox_w, f.bbox_h
     FROM people p
     LEFT JOIN faces f ON f.id = p.representative_face_id
     WHERE p.face_count > 0
@@ -137,6 +155,7 @@ const stmts = {
     UPDATE people SET representative_face_id = @face_id WHERE id = @id
   `),
   deletePerson: db.prepare(`DELETE FROM people WHERE id = ?`),
+  deleteEmptyPeople: db.prepare(`DELETE FROM people WHERE face_count = 0`),
 
   // Media for a person (through faces)
   getMediaByPerson: db.prepare(`
@@ -159,6 +178,8 @@ const stmts = {
   `),
   isAiScanned: db.prepare(`SELECT 1 FROM ai_scan_status WHERE media_id = ?`),
   getAiScanCount: db.prepare(`SELECT COUNT(*) as count FROM ai_scan_status`),
+  getAiTotalPhotos: db.prepare(`SELECT COUNT(*) as count FROM media WHERE media_type = 'photo'`),
+  getAiTotalFaces: db.prepare(`SELECT COALESCE(SUM(faces_found), 0) as count FROM ai_scan_status`),
   getUnscannedPhotos: db.prepare(`
     SELECT m.* FROM media m
     LEFT JOIN ai_scan_status a ON a.media_id = m.id
@@ -166,18 +187,35 @@ const stmts = {
     ORDER BY m.id
     LIMIT ?
   `),
+  clearAiScanForMedia: db.prepare(`DELETE FROM ai_scan_status WHERE media_id = ?`),
 
-  // Timeline queries
-  getTimeline: db.prepare(`
+  // Timeline queries — by month
+  getTimelineByMonth: db.prepare(`
     SELECT
-      strftime('%Y-%m', COALESCE(date_taken, date_modified)) as month,
+      strftime('%Y-%m', COALESCE(date_taken, date_modified)) as period,
       COUNT(*) as count,
       SUM(CASE WHEN media_type = 'photo' THEN 1 ELSE 0 END) as photos,
-      SUM(CASE WHEN media_type = 'video' THEN 1 ELSE 0 END) as videos
+      SUM(CASE WHEN media_type = 'video' THEN 1 ELSE 0 END) as videos,
+      MIN(id) as first_media_id
     FROM media
-    GROUP BY month
-    ORDER BY month DESC
+    GROUP BY period
+    ORDER BY period DESC
   `),
+
+  // Timeline queries — by day
+  getTimelineByDay: db.prepare(`
+    SELECT
+      strftime('%Y-%m-%d', COALESCE(date_taken, date_modified)) as period,
+      COUNT(*) as count,
+      SUM(CASE WHEN media_type = 'photo' THEN 1 ELSE 0 END) as photos,
+      SUM(CASE WHEN media_type = 'video' THEN 1 ELSE 0 END) as videos,
+      MIN(id) as first_media_id
+    FROM media
+    GROUP BY period
+    ORDER BY period DESC
+  `),
+
+  // Media for a specific month
   getMediaByMonth: db.prepare(`
     SELECT * FROM media
     WHERE strftime('%Y-%m', COALESCE(date_taken, date_modified)) = @month
@@ -188,6 +226,43 @@ const stmts = {
     SELECT COUNT(*) as count FROM media
     WHERE strftime('%Y-%m', COALESCE(date_taken, date_modified)) = ?
   `),
+
+  // Media for a specific day
+  getMediaByDay: db.prepare(`
+    SELECT * FROM media
+    WHERE strftime('%Y-%m-%d', COALESCE(date_taken, date_modified)) = @day
+    ORDER BY COALESCE(date_taken, date_modified) DESC
+    LIMIT @limit OFFSET @offset
+  `),
+
+  // Continuous timeline (paginated, all media ordered by date)
+  getTimelineContinuous: db.prepare(`
+    SELECT * FROM media
+    ORDER BY COALESCE(date_taken, date_modified) DESC
+    LIMIT @limit OFFSET @offset
+  `),
+  getTimelineContinuousCount: db.prepare(`
+    SELECT COUNT(*) as count FROM media
+  `),
+
+  // Location queries
+  getMediaWithLocation: db.prepare(`
+    SELECT id, file_name, media_type, latitude, longitude, date_taken, date_modified
+    FROM media
+    WHERE latitude IS NOT NULL AND longitude IS NOT NULL
+    ORDER BY COALESCE(date_taken, date_modified) DESC
+  `),
+  getMediaByLocationBounds: db.prepare(`
+    SELECT * FROM media
+    WHERE latitude BETWEEN @lat_min AND @lat_max
+      AND longitude BETWEEN @lng_min AND @lng_max
+    ORDER BY COALESCE(date_taken, date_modified) DESC
+    LIMIT @limit OFFSET @offset
+  `),
+
+  // People count
+  getPeopleCount: db.prepare(`SELECT COUNT(*) as count FROM people WHERE face_count > 0`),
+  getLocationCount: db.prepare(`SELECT COUNT(DISTINCT CAST(latitude * 100 AS INT) || ',' || CAST(longitude * 100 AS INT)) as count FROM media WHERE latitude IS NOT NULL`),
 };
 
 module.exports = {
@@ -215,6 +290,7 @@ module.exports = {
   getFacesByPerson(personId) { return stmts.getFacesByPerson.all(personId); },
   updateFacePerson(faceId, personId) { return stmts.updateFacePerson.run({ id: faceId, person_id: personId }); },
   getAllFacesWithEmbeddings() { return stmts.getAllFacesWithEmbeddings.all(); },
+  deleteFacesByMedia(mediaId) { return stmts.deleteFacesByMedia.run(mediaId); },
 
   // People operations
   insertPerson(data) { return stmts.insertPerson.run(data); },
@@ -224,6 +300,7 @@ module.exports = {
   updatePersonFaceCount(id) { return stmts.updatePersonFaceCount.run({ id }); },
   updatePersonRepFace(id, faceId) { return stmts.updatePersonRepFace.run({ id, face_id: faceId }); },
   deletePerson(id) { return stmts.deletePerson.run(id); },
+  deleteEmptyPeople() { return stmts.deleteEmptyPeople.run(); },
   getMediaByPerson(personId, page = 1, limit = 60) {
     const offset = (page - 1) * limit;
     return stmts.getMediaByPerson.all({ person_id: personId, limit, offset });
@@ -234,13 +311,37 @@ module.exports = {
   markAiScanned(mediaId, facesFound) { return stmts.markAiScanned.run({ media_id: mediaId, faces_found: facesFound }); },
   isAiScanned(mediaId) { return !!stmts.isAiScanned.get(mediaId); },
   getAiScanCount() { return stmts.getAiScanCount.get().count; },
+  getAiTotalPhotos() { return stmts.getAiTotalPhotos.get().count; },
+  getAiTotalFaces() { return stmts.getAiTotalFaces.get().count; },
   getUnscannedPhotos(limit = 50) { return stmts.getUnscannedPhotos.all(limit); },
+  clearAiScanForMedia(mediaId) { return stmts.clearAiScanForMedia.run(mediaId); },
 
   // Timeline
-  getTimeline() { return stmts.getTimeline.all(); },
+  getTimelineByMonth() { return stmts.getTimelineByMonth.all(); },
+  getTimelineByDay() { return stmts.getTimelineByDay.all(); },
   getMediaByMonth(month, page = 1, limit = 60) {
     const offset = (page - 1) * limit;
     return stmts.getMediaByMonth.all({ month, limit, offset });
   },
   getMediaCountByMonth(month) { return stmts.getMediaCountByMonth.get(month).count; },
+  getMediaByDay(day, page = 1, limit = 60) {
+    const offset = (page - 1) * limit;
+    return stmts.getMediaByDay.all({ day, limit, offset });
+  },
+  getTimelineContinuous(page = 1, limit = 60) {
+    const offset = (page - 1) * limit;
+    return stmts.getTimelineContinuous.all({ limit, offset });
+  },
+  getTimelineContinuousCount() { return stmts.getTimelineContinuousCount.get().count; },
+
+  // Locations
+  getMediaWithLocation() { return stmts.getMediaWithLocation.all(); },
+  getMediaByLocationBounds(latMin, latMax, lngMin, lngMax, page = 1, limit = 60) {
+    const offset = (page - 1) * limit;
+    return stmts.getMediaByLocationBounds.all({ lat_min: latMin, lat_max: latMax, lng_min: lngMin, lng_max: lngMax, limit, offset });
+  },
+
+  // Counts
+  getPeopleCount() { return stmts.getPeopleCount.get().count; },
+  getLocationCount() { return stmts.getLocationCount.get().count; },
 };

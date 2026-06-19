@@ -10,10 +10,16 @@
   <title>Gallery</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/css/style.css">
 </head>
 <body>
+
+  <!-- AI Progress Bar -->
+  <div id="ai-progress-bar" class="ai-progress-bar hidden">
+    <div id="ai-progress-fill" class="ai-progress-fill"></div>
+  </div>
+
   <!-- Header -->
   <header id="app-header" class="header">
     <div class="header-content">
@@ -21,59 +27,167 @@
         <h1 class="header-title">Gallery</h1>
         <span id="stats-badge" class="stats-badge">—</span>
       </div>
-      <button id="scan-btn" class="icon-btn" title="Rescan media">
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <polyline points="23 4 23 10 17 10"></polyline>
-          <polyline points="1 20 1 14 7 14"></polyline>
-          <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path>
-        </svg>
-      </button>
+      <div class="header-right">
+        <button id="scan-btn" class="icon-btn" title="Rescan media">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="23 4 23 10 17 10"></polyline>
+            <polyline points="1 20 1 14 7 14"></polyline>
+            <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path>
+          </svg>
+        </button>
+      </div>
     </div>
-
-    <!-- Filter Tabs -->
-    <nav class="filter-tabs">
-      <button class="filter-tab active" data-filter="all">All</button>
-      <button class="filter-tab" data-filter="photo">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="m21 15-5-5L5 21"/></svg>
-        Photos
-      </button>
-      <button class="filter-tab" data-filter="video">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>
-        Videos
-      </button>
-    </nav>
   </header>
 
-  <!-- Gallery Grid -->
-  <main id="gallery" class="gallery">
-    <!-- Items injected by JS -->
+  <!-- Main Content Area (views switch here) -->
+  <main id="main-content" class="main-content">
+
+    <!-- ═══ PHOTOS VIEW ═══ -->
+    <section id="view-photos" class="view active" data-view="photos">
+      <!-- Filter Tabs -->
+      <nav class="filter-tabs">
+        <button class="filter-tab active" data-filter="all">All</button>
+        <button class="filter-tab" data-filter="photo">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="m21 15-5-5L5 21"/></svg>
+          Photos
+        </button>
+        <button class="filter-tab" data-filter="video">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+          Videos
+        </button>
+      </nav>
+      <div id="gallery" class="gallery"></div>
+      <div id="loader" class="loader">
+        <div class="loader-spinner"></div>
+        <p class="loader-text">Loading...</p>
+      </div>
+      <div id="empty-state" class="empty-state hidden">
+        <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="m21 15-5-5L5 21"/></svg>
+        <p>No media found</p>
+        <button onclick="Gallery.triggerScan()" class="btn-primary">Scan for media</button>
+      </div>
+    </section>
+
+    <!-- ═══ PEOPLE VIEW ═══ -->
+    <section id="view-people" class="view" data-view="people">
+      <div class="view-header">
+        <h2 class="view-title">People</h2>
+        <span id="people-count" class="view-subtitle"></span>
+      </div>
+      <div id="people-grid" class="people-grid"></div>
+      <div id="people-empty" class="empty-state hidden">
+        <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+        <p>No people found yet</p>
+        <p class="text-muted">Face indexing is running in the background</p>
+      </div>
+      <!-- Person detail sub-view -->
+      <div id="person-detail" class="person-detail hidden">
+        <div class="person-detail-header">
+          <button id="person-back-btn" class="icon-btn-sm" title="Back">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 18 9 12 15 6"/></svg>
+          </button>
+          <h3 id="person-detail-name" class="person-detail-name" contenteditable="true"></h3>
+          <span id="person-detail-count" class="view-subtitle"></span>
+        </div>
+        <div id="person-detail-grid" class="gallery"></div>
+      </div>
+    </section>
+
+    <!-- ═══ TIMELINE VIEW ═══ -->
+    <section id="view-timeline" class="view" data-view="timeline">
+      <div class="view-header">
+        <h2 class="view-title">Timeline</h2>
+        <!-- Mode Slider -->
+        <div class="timeline-mode-slider" id="timeline-mode-slider">
+          <button class="mode-btn active" data-mode="month">Month</button>
+          <button class="mode-btn" data-mode="day">Day</button>
+          <button class="mode-btn" data-mode="continuous">Stream</button>
+          <div class="mode-indicator" id="mode-indicator"></div>
+        </div>
+      </div>
+      <div id="timeline-content" class="timeline-content"></div>
+      <div id="timeline-loader" class="loader hidden">
+        <div class="loader-spinner"></div>
+      </div>
+    </section>
+
+    <!-- ═══ PLACES VIEW ═══ -->
+    <section id="view-places" class="view" data-view="places">
+      <div class="view-header">
+        <h2 class="view-title">Places</h2>
+        <span id="places-count" class="view-subtitle"></span>
+      </div>
+      <div id="places-grid" class="places-grid"></div>
+      <div id="places-empty" class="empty-state hidden">
+        <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg>
+        <p>No location data found</p>
+        <p class="text-muted">Photos with GPS coordinates will appear here</p>
+      </div>
+      <!-- Place detail sub-view -->
+      <div id="place-detail" class="person-detail hidden">
+        <div class="person-detail-header">
+          <button id="place-back-btn" class="icon-btn-sm" title="Back">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 18 9 12 15 6"/></svg>
+          </button>
+          <h3 id="place-detail-name" class="person-detail-name"></h3>
+          <span id="place-detail-count" class="view-subtitle"></span>
+        </div>
+        <div id="place-detail-grid" class="gallery"></div>
+      </div>
+    </section>
   </main>
 
-  <!-- Loading indicator -->
-  <div id="loader" class="loader">
-    <div class="loader-spinner"></div>
-    <p class="loader-text">Loading...</p>
-  </div>
-
-  <!-- Empty state -->
-  <div id="empty-state" class="empty-state hidden">
-    <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1" stroke-linecap="round">
-      <rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="m21 15-5-5L5 21"/>
-    </svg>
-    <p>No media found</p>
-    <button onclick="triggerScan()" class="btn-primary">Scan for media</button>
-  </div>
+  <!-- Bottom Tab Bar -->
+  <nav id="tab-bar" class="tab-bar">
+    <button class="tab active" data-tab="photos" id="tab-photos">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+        <rect x="3" y="3" width="18" height="18" rx="2"/>
+        <circle cx="8.5" cy="8.5" r="1.5"/>
+        <path d="m21 15-5-5L5 21"/>
+      </svg>
+      <span>Photos</span>
+    </button>
+    <button class="tab" data-tab="people" id="tab-people">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+        <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/>
+        <circle cx="12" cy="7" r="4"/>
+      </svg>
+      <span>People</span>
+    </button>
+    <button class="tab" data-tab="timeline" id="tab-timeline">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+        <rect x="3" y="4" width="18" height="18" rx="2" ry="2"/>
+        <line x1="16" y1="2" x2="16" y2="6"/>
+        <line x1="8" y1="2" x2="8" y2="6"/>
+        <line x1="3" y1="10" x2="21" y2="10"/>
+      </svg>
+      <span>Timeline</span>
+    </button>
+    <button class="tab" data-tab="places" id="tab-places">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+        <path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/>
+        <circle cx="12" cy="10" r="3"/>
+      </svg>
+      <span>Places</span>
+    </button>
+  </nav>
 
   <!-- Lightbox -->
   <div id="lightbox" class="lightbox hidden">
     <div class="lightbox-backdrop"></div>
     <div class="lightbox-content">
-      <div id="lightbox-media" class="lightbox-media">
-        <!-- Photo or video rendered here -->
-      </div>
-      <div class="lightbox-info" id="lightbox-info">
-        <span id="lightbox-name" class="lightbox-name"></span>
-        <span id="lightbox-meta" class="lightbox-meta"></span>
+      <div id="lightbox-media" class="lightbox-media"></div>
+      <!-- Detail panel (swipe up) -->
+      <div id="lightbox-detail" class="lightbox-detail">
+        <div class="detail-handle"></div>
+        <div class="detail-body">
+          <div id="detail-filename" class="detail-row detail-filename"></div>
+          <div id="detail-date" class="detail-row"></div>
+          <div id="detail-size" class="detail-row"></div>
+          <div id="detail-dimensions" class="detail-row"></div>
+          <div id="detail-location" class="detail-row"></div>
+          <div id="detail-faces" class="detail-row"></div>
+        </div>
       </div>
     </div>
     <button id="lightbox-close" class="lightbox-close" aria-label="Close">

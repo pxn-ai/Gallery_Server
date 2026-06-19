@@ -2,6 +2,7 @@ const fs = require('fs');
 const path = require('path');
 const sharp = require('sharp');
 const ffmpeg = require('fluent-ffmpeg');
+const exifr = require('exifr');
 const db = require('./db');
 
 const MEDIA_PATH = process.env.MEDIA_PATH || '/media/pasan/PHOTOS/';
@@ -32,34 +33,60 @@ function probeVideo(filePath) {
 }
 
 /**
- * Get photo metadata via Sharp
+ * Get photo metadata via Sharp (dimensions) + exifr (EXIF date + GPS)
  */
 async function probePhoto(filePath) {
+  let width = null, height = null, dateTaken = null;
+  let latitude = null, longitude = null;
+
+  // Get dimensions via Sharp (fast)
   try {
     const meta = await sharp(filePath).metadata();
-    let dateTaken = null;
+    width = meta.width || null;
+    height = meta.height || null;
+  } catch (err) {
+    console.warn(`  ⚠ Sharp metadata failed for: ${path.basename(filePath)} — ${err.message}`);
+  }
 
-    // Try to extract EXIF date
-    if (meta.exif) {
-      try {
-        // Parse EXIF buffer for DateTimeOriginal
-        const exifStr = meta.exif.toString('binary');
-        const dateMatch = exifStr.match(/(\d{4}):(\d{2}):(\d{2}) (\d{2}):(\d{2}):(\d{2})/);
-        if (dateMatch) {
-          dateTaken = `${dateMatch[1]}-${dateMatch[2]}-${dateMatch[3]}T${dateMatch[4]}:${dateMatch[5]}:${dateMatch[6]}`;
-        }
-      } catch (_) { /* ignore EXIF parse errors */ }
+  // Get EXIF date + GPS via exifr (supports HEIC natively, auto-converts GPS DMS→decimal)
+  try {
+    const exif = await exifr.parse(filePath, {
+      pick: ['DateTimeOriginal', 'CreateDate', 'ModifyDate', 'GPSLatitude', 'GPSLongitude'],
+      translateValues: true,
+      reviveValues: true,
+    });
+
+    if (exif) {
+      // Date extraction — prefer DateTimeOriginal, fall back to CreateDate
+      const dateVal = exif.DateTimeOriginal || exif.CreateDate || exif.ModifyDate;
+      if (dateVal instanceof Date && !isNaN(dateVal)) {
+        dateTaken = dateVal.toISOString();
+      } else if (typeof dateVal === 'string') {
+        dateTaken = dateVal;
+      }
+
+      // GPS extraction — exifr auto-converts to decimal degrees
+      if (typeof exif.latitude === 'number' && typeof exif.longitude === 'number') {
+        latitude = exif.latitude;
+        longitude = exif.longitude;
+      }
     }
 
-    return {
-      width: meta.width || null,
-      height: meta.height || null,
-      dateTaken,
-    };
+    // If no GPS from main parse, try the dedicated gps() method
+    if (latitude === null) {
+      try {
+        const gps = await exifr.gps(filePath);
+        if (gps && typeof gps.latitude === 'number' && typeof gps.longitude === 'number') {
+          latitude = gps.latitude;
+          longitude = gps.longitude;
+        }
+      } catch (_) { /* no GPS data */ }
+    }
   } catch (err) {
-    console.warn(`  ⚠ Could not read metadata for: ${path.basename(filePath)} — ${err.message}`);
-    return { width: null, height: null, dateTaken: null };
+    console.warn(`  ⚠ EXIF parse failed for: ${path.basename(filePath)} — ${err.message}`);
   }
+
+  return { width, height, dateTaken, latitude, longitude };
 }
 
 /**
@@ -84,10 +111,14 @@ function collectMediaFiles(dir) {
     if (entry.isDirectory()) {
       results.push(...collectMediaFiles(fullPath));
     } else if (entry.isFile()) {
-      // Skip macOS resource fork files and hidden files
+      // Skip macOS resource fork files, hidden files, and AAE sidecar files
       if (entry.name.startsWith('._') || entry.name.startsWith('.')) continue;
 
       const ext = path.extname(entry.name).toLowerCase();
+
+      // Skip Apple AAE edit sidecar files
+      if (ext === '.aae') continue;
+
       if (PHOTO_EXTS.has(ext)) {
         results.push({ path: fullPath, type: 'photo' });
       } else if (VIDEO_EXTS.has(ext)) {
@@ -115,6 +146,12 @@ async function scanMedia(progressCallback) {
   let removed = 0;
   for (const existingPath of existingPaths) {
     if (!currentPaths.has(existingPath)) {
+      // Clear AI scan data for removed files
+      const existing = db.getMediaByPath(existingPath);
+      if (existing) {
+        db.deleteFacesByMedia(existing.id);
+        db.clearAiScanForMedia(existing.id);
+      }
       db.deleteByPath(existingPath);
       removed++;
     }
@@ -127,6 +164,7 @@ async function scanMedia(progressCallback) {
   let scanned = 0;
   let skipped = 0;
   let errors = 0;
+  let gpsFound = 0;
 
   for (const file of files) {
     try {
@@ -139,13 +177,23 @@ async function scanMedia(progressCallback) {
         continue;
       }
 
+      // If file changed, clear its old AI scan data so it gets re-indexed
+      if (existing && existing.file_size !== stat.size) {
+        db.deleteFacesByMedia(existing.id);
+        db.clearAiScanForMedia(existing.id);
+      }
+
       let width = null, height = null, duration = null, dateTaken = null;
+      let latitude = null, longitude = null;
 
       if (file.type === 'photo') {
         const meta = await probePhoto(file.path);
         width = meta.width;
         height = meta.height;
         dateTaken = meta.dateTaken;
+        latitude = meta.latitude;
+        longitude = meta.longitude;
+        if (latitude !== null) gpsFound++;
       } else {
         const meta = await probeVideo(file.path);
         width = meta.width;
@@ -163,6 +211,8 @@ async function scanMedia(progressCallback) {
         duration,
         date_taken: dateTaken,
         date_modified: stat.mtime.toISOString(),
+        latitude: latitude,
+        longitude: longitude,
       });
 
       scanned++;
@@ -170,7 +220,7 @@ async function scanMedia(progressCallback) {
       // Log progress every 100 files
       if (scanned % 100 === 0) {
         const pct = Math.round(((scanned + skipped) / files.length) * 100);
-        console.log(`   📸 Scanned ${scanned} new files (${pct}% complete)`);
+        console.log(`   📸 Scanned ${scanned} new files (${pct}% complete, ${gpsFound} with GPS)`);
         if (progressCallback) progressCallback(scanned, skipped, files.length);
       }
     } catch (err) {
@@ -181,9 +231,9 @@ async function scanMedia(progressCallback) {
 
   const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
   console.log(`\n✅ Scan complete in ${elapsed}s`);
-  console.log(`   📸 ${scanned} new | ⏭ ${skipped} cached | ❌ ${errors} errors\n`);
+  console.log(`   📸 ${scanned} new | ⏭ ${skipped} cached | 📍 ${gpsFound} GPS | ❌ ${errors} errors\n`);
 
-  return { scanned, skipped, errors, total: files.length };
+  return { scanned, skipped, errors, total: files.length, gpsFound };
 }
 
 module.exports = { scanMedia, collectMediaFiles };

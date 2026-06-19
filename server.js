@@ -2,6 +2,7 @@ const express = require('express');
 const path = require('path');
 const apiRoutes = require('./src/routes/api');
 const { scanMedia } = require('./src/scanner');
+const aiIndexer = require('./src/ai/indexer');
 
 const PORT = process.env.PORT || 3001;
 const HOST = '0.0.0.0';
@@ -31,7 +32,7 @@ app.listen(PORT, HOST, async () => {
 
   console.log(`
   ╔══════════════════════════════════════════════════════╗
-  ║           🖼️  Gallery Server Running                  ║
+  ║           🖼️  Gallery Server v2 Running               ║
   ╠══════════════════════════════════════════════════════╣
   ║                                                      ║
   ║  Local:   http://localhost:${PORT}                     ║
@@ -49,6 +50,10 @@ app.listen(PORT, HOST, async () => {
   } catch (err) {
     console.error('Initial scan failed:', err.message);
   }
+
+  // Start AI face indexer as persistent background task
+  console.log('🧠 Starting AI face indexer (background)...\n');
+  aiIndexer.start();
 });
 
 /**
