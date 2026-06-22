@@ -14,6 +14,7 @@ db.pragma('journal_mode = WAL');
 db.pragma('synchronous = NORMAL');
 
 // Create tables
+// Step 1: Create media table (without GPS columns if upgrading from v1)
 db.exec(`
   CREATE TABLE IF NOT EXISTS media (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -33,13 +34,30 @@ db.exec(`
     preview_path TEXT,
     scanned_at TEXT DEFAULT (datetime('now'))
   );
+`);
 
+// Step 2: Add GPS columns if upgrading from v1 schema (before creating indexes)
+try {
+  db.exec(`ALTER TABLE media ADD COLUMN latitude REAL`);
+} catch (_) { /* column already exists */ }
+try {
+  db.exec(`ALTER TABLE media ADD COLUMN longitude REAL`);
+} catch (_) { /* column already exists */ }
+try {
+  db.exec(`ALTER TABLE media ADD COLUMN location_name TEXT`);
+} catch (_) { /* column already exists */ }
+
+// Step 3: Create indexes (now that all columns exist)
+db.exec(`
   CREATE INDEX IF NOT EXISTS idx_media_type ON media(media_type);
   CREATE INDEX IF NOT EXISTS idx_media_date ON media(date_taken DESC);
   CREATE INDEX IF NOT EXISTS idx_media_modified ON media(date_modified DESC);
   CREATE INDEX IF NOT EXISTS idx_media_path ON media(file_path);
   CREATE INDEX IF NOT EXISTS idx_media_location ON media(latitude, longitude);
+`);
 
+// Step 4: Create AI-related tables
+db.exec(`
   -- Face detections (one row per face found in a photo)
   CREATE TABLE IF NOT EXISTS faces (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -75,17 +93,6 @@ db.exec(`
 
   CREATE INDEX IF NOT EXISTS idx_ai_scan ON ai_scan_status(media_id);
 `);
-
-// Add GPS columns if upgrading from v1 schema
-try {
-  db.exec(`ALTER TABLE media ADD COLUMN latitude REAL`);
-} catch (_) { /* column already exists */ }
-try {
-  db.exec(`ALTER TABLE media ADD COLUMN longitude REAL`);
-} catch (_) { /* column already exists */ }
-try {
-  db.exec(`ALTER TABLE media ADD COLUMN location_name TEXT`);
-} catch (_) { /* column already exists */ }
 
 // Prepared statements
 const stmts = {

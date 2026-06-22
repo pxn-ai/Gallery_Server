@@ -107,6 +107,10 @@ async function processPhoto(media) {
     return storedFaces;
 
   } catch (err) {
+    // If the model itself failed to load, propagate the error to stop indexing
+    if (err.message.includes('failed to load') || err.message.includes('too small') || err.message.includes('not found')) {
+      throw err; // Stop the indexer entirely
+    }
     console.warn(`   ⚠ Face detection failed for ${media.file_name}: ${err.message}`);
     stats.errors++;
     // Mark as scanned with 0 faces to avoid retrying broken files
@@ -200,6 +204,13 @@ async function runIndexer() {
       await sleep(YIELD_DELAY);
 
     } catch (err) {
+      // If model failed to load, stop the indexer entirely
+      if (err.message.includes('failed to load') || err.message.includes('too small') || err.message.includes('not found at')) {
+        console.error(`\n   ❌ AI indexer stopped: ${err.message}`);
+        console.error('   Run "npm run download-models" to download the required ONNX models.\n');
+        shouldStop = true;
+        break;
+      }
       console.error(`   ⚠ AI indexer error: ${err.message}`);
       stats.errors++;
       await sleep(5000); // Back off on error

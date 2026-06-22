@@ -13,6 +13,7 @@ const FACE_SIZE = 112;
 
 let session = null;
 let inputName = null;
+let loadFailed = false;
 
 // Standard alignment reference points for ArcFace 112x112
 // These are the "ideal" positions of [left_eye, right_eye, nose, left_mouth, right_mouth]
@@ -29,13 +30,32 @@ const REF_POINTS = [
  */
 async function ensureSession() {
   if (session) return;
+  if (loadFailed) throw new Error('ArcFace model failed to load (previous attempt failed)');
+
+  // Validate model file exists and is not empty
+  const fs = require('fs');
+  if (!fs.existsSync(MODEL_PATH)) {
+    loadFailed = true;
+    throw new Error(`ArcFace model not found at ${MODEL_PATH}. Run: npm run download-models`);
+  }
+  const stat = fs.statSync(MODEL_PATH);
+  if (stat.size < 100000) {
+    loadFailed = true;
+    throw new Error(`ArcFace model file is too small (${stat.size} bytes) — likely corrupt. Delete and re-run: npm run download-models`);
+  }
+
   console.log('🧠 Loading ArcFace embedding model...');
-  session = await ort.InferenceSession.create(MODEL_PATH, {
-    executionProviders: ['cpu'],
-    graphOptimizationLevel: 'all',
-  });
-  inputName = session.inputNames[0];
-  console.log(`   ✅ ArcFace loaded (input: ${inputName})`);
+  try {
+    session = await ort.InferenceSession.create(MODEL_PATH, {
+      executionProviders: ['cpu'],
+      graphOptimizationLevel: 'all',
+    });
+    inputName = session.inputNames[0];
+    console.log(`   ✅ ArcFace loaded (input: ${inputName})`);
+  } catch (err) {
+    loadFailed = true;
+    throw err;
+  }
 }
 
 /**

@@ -17,19 +17,39 @@ const FMC = 3; // Feature map count
 
 let session = null;
 let inputName = null;
+let loadFailed = false;
 
 /**
  * Initialize the ONNX session (lazy, cached)
  */
 async function ensureSession() {
   if (session) return;
+  if (loadFailed) throw new Error('SCRFD model failed to load (previous attempt failed)');
+
+  // Validate model file exists and is not empty
+  const fs = require('fs');
+  if (!fs.existsSync(MODEL_PATH)) {
+    loadFailed = true;
+    throw new Error(`SCRFD model not found at ${MODEL_PATH}. Run: npm run download-models`);
+  }
+  const stat = fs.statSync(MODEL_PATH);
+  if (stat.size < 100000) {
+    loadFailed = true;
+    throw new Error(`SCRFD model file is too small (${stat.size} bytes) — likely corrupt. Delete and re-run: npm run download-models`);
+  }
+
   console.log('🔍 Loading SCRFD face detection model...');
-  session = await ort.InferenceSession.create(MODEL_PATH, {
-    executionProviders: ['cpu'],
-    graphOptimizationLevel: 'all',
-  });
-  inputName = session.inputNames[0];
-  console.log(`   ✅ SCRFD loaded (input: ${inputName})`);
+  try {
+    session = await ort.InferenceSession.create(MODEL_PATH, {
+      executionProviders: ['cpu'],
+      graphOptimizationLevel: 'all',
+    });
+    inputName = session.inputNames[0];
+    console.log(`   ✅ SCRFD loaded (input: ${inputName})`);
+  } catch (err) {
+    loadFailed = true;
+    throw err;
+  }
 }
 
 /**
